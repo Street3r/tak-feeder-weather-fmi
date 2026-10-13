@@ -7,19 +7,19 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from . import __version__, fmi
+from . import __version__, alerts, fmi
 from .common import Health, cot_event, env, env_bool, env_float, fetch, remarks_text
 
 LOG = logging.getLogger("tak_feeder_weather_fmi")
 
 WEATHER_QUERY = "fmi::observations::weather::multipointcoverage"
 RADIATION_QUERY = "stuk::observations::external-radiation::latest::multipointcoverage"
-DEFAULT_PARAMETERS = "t2m,ws_10min,wg_10min,wd_10min,rh,p_sea,vis,snow_aws"
+DEFAULT_PARAMETERS = "t2m,ws_10min,wg_10min,wd_10min,rh,p_sea,vis,snow_aws,wawa"
 WEATHER_TYPE = "b-w-A-t"  # as in upstream
 RADIATION_TYPE = "a-n-G"
 # Alert look: ATAK built-in FEMA HAZMAT icon. Normal stations keep the plain
@@ -44,6 +44,7 @@ class Settings:
     timezone: str = "Europe/Helsinki"
     source_line: str = "Source: Finnish Meteorological Institute open data, CC BY 4.0"
     radiation_source_line: str = "Source: STUK / FMI open data, CC BY 4.0"
+    alerts: alerts.AlertSettings = field(default_factory=alerts.AlertSettings)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -63,6 +64,7 @@ class Settings:
             timezone=env("TIMEZONE", d.timezone),
             source_line=env("SOURCE_LINE", d.source_line),
             radiation_source_line=env("RADIATION_SOURCE_LINE", d.radiation_source_line),
+            alerts=alerts.AlertSettings.from_env(),
         )
 
 
@@ -82,8 +84,10 @@ def weather_lines(values: dict[str, float]) -> list[Optional[str]]:
             wind += f", from {v('wd_10min'):.0f}°"
     snow = v("snow_aws")
     vis = v("vis")
+    chill = alerts.wind_chill(v("t2m"), v("ws_10min"))
     return [
         f"Temperature: {v('t2m'):.1f} °C" if v("t2m") is not None else None,
+        f"Wind chill: {chill:.0f} °C" if chill is not None else None,
         wind,
         f"Humidity: {v('rh'):.0f} %" if v("rh") is not None else None,
         f"Pressure: {v('p_sea'):.1f} hPa" if v("p_sea") is not None else None,
@@ -105,17 +109,29 @@ class WeatherSource:
         return when.astimezone(self.tz).strftime("%H:%M") if when else None
 
     def weather_event(self, st: fmi.Station, now: datetime) -> bytes:
-        """CoT for one weather station."""
-        lines = [f"Station: {st.name}", *weather_lines(st.values)]
+        """CoT for one weather station. A normal station is a plain marker; an
+        alert changes the icon (tinted with the level colour) and callsign."""
+        found = alerts.evaluate(st.values, st.lat, st.time or now, self.s.alerts)
+        lines: list[Optional[str]] = [
+            f"ALERT ({alerts.LEVEL_NAMES[a.level]}) {a.text}" for a in found]
+        lines += [f"Station: {st.name}", *weather_lines(st.values)]
         lines.append(f"Observed: {self._local(st.time)}" if st.time else None)
+        tags = ["weather", "FMI"]
+        callsign = f"FMI {st.name}"
+        top = found[0] if found else None
+        if top:
+            tags += ["alert"] + [a.kind for a in found]
+            callsign += f" {alerts.CALLSIGN_WORDS[top.kind]}"
         return cot_event(
             uid=f"fmisensor.{st.fmisid}",  # as in upstream
             cot_type=WEATHER_TYPE,
             lat=st.lat, lon=st.lon,
-            callsign=f"FMI {st.name}",
-            remarks=remarks_text(lines, self.s.source_line, ("weather", "FMI")),
+            callsign=callsign,
+            remarks=remarks_text(lines, self.s.source_line, tags),
             stale=self.s.stale_seconds,
             how="m-c",
+            icon=top.icon if top else "",
+            color=top.color if top else "",
             now=now,
         )
 

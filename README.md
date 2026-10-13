@@ -24,6 +24,30 @@ by Stefan Gofferje.
 Missing values are left out. Each round fetches the last `HISTORY_MINUTES`
 minutes, so the data stays current.
 
+## Weather alerts
+
+A weather station is a plain marker as long as its values are normal. When a
+value reaches an alert level (orange and red by default), the marker gets a
+built-in ATAK icon tinted with the level colour, the callsign gets a word and
+the remarks start with an `ALERT` line:
+
+| Alert | Icon (ATAK Default set) | Callsign | Default (yellow / orange / red) |
+|---|---|---|---|
+| Wind | `Transportation/Warning.png` | `FMI <station> WIND` | gusts 20 / 25 / 30 m/s in winter, 15 / 20 / 25 in summer; or mean wind 14 / 21 / 33 m/s |
+| Frost | `Weather/Snowflake.png` | `… FROST` | temperature or wind chill; south −20 / −30 / −35, central −25 / −35 / −40, north −30 / −40 / −45 °C |
+| Freezing rain | `Weather/Icing.png` | `… ICE` | present weather codes 54–56, 64–66 (orange) |
+| Heat | `Weather/sun.png` | `… HEAT` | 27 / 30 / 35 °C |
+| Visibility | `Transportation/Warning.png` | `… FOG` | 1000 / 200 / 50 m |
+
+Wind, frost and heat defaults are FMI's warning criteria
+([wind](https://www.ilmatieteenlaitos.fi/tuulivaroitukset),
+[frost and heat](https://www.ilmatieteenlaitos.fi/tietoa-helle-ja-pakkasvaroitukset)).
+FMI warnings are area forecasts; these alerts only say that one station
+measures such values now. The regional split by latitude approximates FMI's
+regions. Wind chill uses the JAG/TI index with wind in m/s, as FMI does.
+The tags are `#alert` plus `#wind`, `#frost`, `#freezing`, `#heat` or
+`#visibility`.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -33,8 +57,16 @@ minutes, so the data stays current.
 | `PYTAK_TLS_DONT_VERIFY` | `0` | `1` = do not verify the server certificate |
 | `TAK_PROTO` | | pytak protocol option, as upstream |
 | `FMI_BBOX` | `18,59,33,71` | Area (west,south,east,north). Upstream used 60°N, which left out the southern coast (Hanko, Utö) |
-| `WEATHER_PARAMETERS` | `t2m,ws_10min,wg_10min,wd_10min,rh,p_sea,vis,snow_aws` | FMI parameters |
+| `WEATHER_PARAMETERS` | `t2m,ws_10min,wg_10min,wd_10min,rh,p_sea,vis,snow_aws,wawa` | FMI parameters |
 | `HISTORY_MINUTES` | `60` | Look-back for the latest value of each station |
+| `ALERT_MIN_LEVEL` | `orange` | Lowest alert level shown: `yellow`, `orange`, `red` |
+| `ALERTS` | all | `wind,frost,freezing,heat,visibility` |
+| `FROST_SOUTH` / `_CENTRAL` / `_NORTH` | FMI criteria | °C as `yellow,orange,red`; regions split at `FROST_CENTRAL_LAT` / `FROST_NORTH_LAT` (62.5 / 65.5) |
+| `HEAT` | `27,30,35` | °C |
+| `WIND_GUSTS_WINTER` / `_SUMMER` | `20,25,30` / `15,20,25` | Gusts, m/s (winter Nov–Apr) |
+| `WIND_MEAN` | `14,21,33` | 10-minute mean wind, m/s |
+| `VISIBILITY` | `1000,200,50` | m (at or below) |
+| `FREEZING` | `1` | Freezing drizzle / rain from present weather (`wawa`) |
 | `RADIATION` | `0` | `1` = also STUK radiation stations |
 | `RADIATION_ALERT_LEVEL` | `0.4` | µSv/h; stations at or above it get `ALERT` and `#alert` |
 | `RADIATION_ALERT_ICON` | FEMA `HAZMAT.png` | ATAK iconset icon shown only during an alert (empty = no change) |
@@ -88,6 +120,9 @@ Changes in this fork (Street3r):
   - More values: gusts, humidity, pressure, visibility, snow depth, observation
     time. Callsign `FMI <station>`. Area extended to 59°N.
   - Optional STUK radiation stations (the unfinished upstream code is replaced).
+  - Weather alerts (wind, frost incl. wind chill, freezing rain, heat,
+    visibility) with FMI's criteria; only stations in alert change their icon.
+    Present weather (`wawa`) and a wind chill line added.
   - Radiation alert: plain marker normally; above the alert level the icon
     changes (ATAK built-in FEMA HAZMAT by default), with optional colour and
     CoT type.
