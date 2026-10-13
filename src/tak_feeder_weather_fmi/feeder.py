@@ -22,6 +22,9 @@ RADIATION_QUERY = "stuk::observations::external-radiation::latest::multipointcov
 DEFAULT_PARAMETERS = "t2m,ws_10min,wg_10min,wd_10min,rh,p_sea,vis,snow_aws"
 WEATHER_TYPE = "b-w-A-t"  # as in upstream
 RADIATION_TYPE = "a-n-G"
+# Alert look: ATAK built-in FEMA HAZMAT icon. Normal stations keep the plain
+# marker; only an alert changes the icon.
+RADIATION_ALERT_ICON = "f8f7f666-8b28-4b57-9fbb-e48e61d33b79/Iron Sites/HAZMAT.png"
 
 
 @dataclass
@@ -35,6 +38,9 @@ class Settings:
     history_minutes: int = 60
     radiation: bool = False
     radiation_alert: float = 0.4
+    radiation_alert_icon: str = RADIATION_ALERT_ICON
+    radiation_alert_color: str = ""
+    radiation_alert_type: str = RADIATION_TYPE
     timezone: str = "Europe/Helsinki"
     source_line: str = "Source: Finnish Meteorological Institute open data, CC BY 4.0"
     radiation_source_line: str = "Source: STUK / FMI open data, CC BY 4.0"
@@ -51,6 +57,9 @@ class Settings:
             history_minutes=int(env_float("HISTORY_MINUTES", d.history_minutes)),
             radiation=env_bool("RADIATION", d.radiation),
             radiation_alert=env_float("RADIATION_ALERT_LEVEL", d.radiation_alert),
+            radiation_alert_icon=env("RADIATION_ALERT_ICON", d.radiation_alert_icon),
+            radiation_alert_color=env("RADIATION_ALERT_COLOR", d.radiation_alert_color),
+            radiation_alert_type=env("RADIATION_ALERT_TYPE", d.radiation_alert_type),
             timezone=env("TIMEZONE", d.timezone),
             source_line=env("SOURCE_LINE", d.source_line),
             radiation_source_line=env("RADIATION_SOURCE_LINE", d.radiation_source_line),
@@ -125,12 +134,14 @@ class WeatherSource:
         tags = ["radiation", "STUK"] + (["alert"] if alert else [])
         return cot_event(
             uid=f"fmiradiation.{st.fmisid}",
-            cot_type=RADIATION_TYPE,
+            cot_type=self.s.radiation_alert_type if alert else RADIATION_TYPE,
             lat=st.lat, lon=st.lon,
             callsign=f"STUK {st.name}" + (" ALERT" if alert else ""),
             remarks=remarks_text(lines, self.s.radiation_source_line, tags),
             stale=self.s.stale_seconds,
             how="m-c",
+            icon=self.s.radiation_alert_icon if alert else "",
+            color=self.s.radiation_alert_color if alert else "",
             now=now,
         )
 

@@ -37,6 +37,9 @@ minutes, so the data stays current.
 | `HISTORY_MINUTES` | `60` | Look-back for the latest value of each station |
 | `RADIATION` | `0` | `1` = also STUK radiation stations |
 | `RADIATION_ALERT_LEVEL` | `0.4` | µSv/h; stations at or above it get `ALERT` and `#alert` |
+| `RADIATION_ALERT_ICON` | FEMA `HAZMAT.png` | ATAK iconset icon shown only during an alert (empty = no change) |
+| `RADIATION_ALERT_COLOR` | | ARGB colour during an alert, e.g. `-65536` (red) |
+| `RADIATION_ALERT_TYPE` | `a-n-G` | CoT type during an alert, e.g. `b-l-c-n-r` (radiation alarm) |
 | `UPDATE_INTERVAL` | `300` | Seconds between rounds (FMI updates every 10 min) |
 | `STALE_SECONDS` | `900` | Marker lifetime without new data |
 | `TIMEZONE` | `Europe/Helsinki` | Time zone of the observation time in the remarks |
@@ -85,6 +88,9 @@ Changes in this fork (Street3r):
   - More values: gusts, humidity, pressure, visibility, snow depth, observation
     time. Callsign `FMI <station>`. Area extended to 59°N.
   - Optional STUK radiation stations (the unfinished upstream code is replaced).
+  - Radiation alert: plain marker normally; above the alert level the icon
+    changes (ATAK built-in FEMA HAZMAT by default), with optional colour and
+    CoT type.
   - `UPDATE_INTERVAL`, `STALE_SECONDS`; health check; unprivileged container;
     tests and CI.
 

@@ -126,6 +126,30 @@ class FeederTest(unittest.TestCase):
         self.assertEqual(ev.find("detail/contact").get("callsign"), "STUK Helsinki Kumpula ALERT")
         self.assertIn("Dose rate: 0.450 µSv/h", ev.find("detail/remarks").text)
         self.assertIn("#alert", ev.find("detail/remarks").text)
+        self.assertEqual(ev.find("detail/usericon").get("iconsetpath"), feeder.RADIATION_ALERT_ICON)
+        self.assertEqual(ev.get("type"), "a-n-G")
+
+    def test_radiation_normal_has_plain_marker(self) -> None:
+        sample = (SAMPLE.replace(b'name="t2m"', b'name="DR_PT10M_avg"')
+                  .replace(b"8.4 3.2", b"0.10 3.2"))
+        src = feeder.WeatherSource(feeder.Settings(radiation=True))
+        st = {s.fmisid: s for s in fmi.parse(sample)}["101004"]
+        ev = ET.fromstring(src.radiation_event(st, datetime.now(timezone.utc)))
+        self.assertEqual(ev.find("detail/contact").get("callsign"), "STUK Helsinki Kumpula")
+        self.assertIsNone(ev.find("detail/usericon"))
+        self.assertIsNone(ev.find("detail/color"))
+
+    def test_radiation_alert_options(self) -> None:
+        sample = (SAMPLE.replace(b'name="t2m"', b'name="DR_PT10M_avg"')
+                  .replace(b"8.4 3.2", b"0.45 3.2"))
+        src = feeder.WeatherSource(feeder.Settings(
+            radiation=True, radiation_alert_icon="x/Shapes/caution.png",
+            radiation_alert_color="-65536", radiation_alert_type="b-l-c-n-r"))
+        st = {s.fmisid: s for s in fmi.parse(sample)}["101004"]
+        ev = ET.fromstring(src.radiation_event(st, datetime.now(timezone.utc)))
+        self.assertEqual(ev.get("type"), "b-l-c-n-r")
+        self.assertEqual(ev.find("detail/usericon").get("iconsetpath"), "x/Shapes/caution.png")
+        self.assertEqual(ev.find("detail/color").get("argb"), "-65536")
 
 
 if __name__ == "__main__":
