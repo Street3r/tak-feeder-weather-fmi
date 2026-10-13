@@ -1,57 +1,93 @@
-** CURRENTLY TESTING - USE WITH CAUTION **
-
-[![Build and publish the container image](https://github.com/sgofferj/tak-feeder-weather-fmi/actions/workflows/actions.yml/badge.svg)](https://github.com/sgofferj/tak-feeder-weather-fmi/actions/workflows/actions.yml)
-
 # tak-feeder-weather-fmi
-Get latest weather observation data from the Finnish Meteorological Institute and feed them to a TAK server
 
-(C) 2025 Stefan Gofferje
+> [!WARNING]
+> **Work in progress. Not recommended for use.** This fork is being improved
+> and has not been tested against a live TAK server yet. Things may change or
+> break without notice.
 
-Licensed under the GNU General Public License V3 or later.
+Sends the latest weather observations of the Finnish Meteorological
+Institute (FMI) stations to a TAK server as CoT. Optionally also the external
+radiation dose rates of STUK's monitoring stations.
 
-## Description
-The Finnish Meteorological Institute provides free API access to the weather data from their sensor network. This container connects to their WFS server,
-downloads the sensor data and sends it to a TAK server.
+Fork of [sgofferj/tak-feeder-weather-fmi](https://github.com/sgofferj/tak-feeder-weather-fmi)
+by Stefan Gofferje.
+
+## What it sends
+
+| Field | Weather station | Radiation station (`RADIATION=1`) |
+|---|---|---|
+| UID | `fmisensor.<fmisid>` (as upstream) | `fmiradiation.<fmisid>` |
+| Callsign | `FMI <station>` | `STUK <station>`, `… ALERT` above the alert level |
+| Type | `b-w-A-t` | `a-n-G` |
+| Remarks | temperature, wind and gusts, humidity, pressure, visibility, snow depth, observation time; `#weather #FMI` | dose rate (µSv/h, 10 min average), observation time; `#radiation #STUK` (+ `#alert`) |
+
+Missing values are left out. Each round fetches the last `HISTORY_MINUTES`
+minutes, so the data stays current.
 
 ## Configuration
-The following values are supported and can be provided either as environment variables or through an .env-file.
 
 | Variable | Default | Purpose |
-|----------|---------|---------|
-| COT_URL | empty | (mandatory) TAK server full URL, e.g. ssl://takserver:8089 |
-| PYTAK_TLS_CLIENT_CERT | empty | (mandatory for ssl) User certificate in PEM format |
-| PYTAK_TLS_CLIENT_KEY | empty | (mandatory for ssl) User certificate key file (xxx.key) |
-| PYTAK_TLS_DONT_VERIFY | 1 | (optional) Verify the server certificate (0) or not (1) |
-| TAK_PROTO | 0 | (optional) Choose the protocol (see [PyTAK docs](https://pytak.readthedocs.io/en/stable/configuration/)) |
+|---|---|---|
+| `COT_URL` | `udp://239.2.3.1:6969` | TAK server, e.g. `ssl://takserver:8089` |
+| `PYTAK_TLS_CLIENT_CERT` / `PYTAK_TLS_CLIENT_KEY` | | Client certificate and unencrypted key (PEM) |
+| `PYTAK_TLS_DONT_VERIFY` | `0` | `1` = do not verify the server certificate |
+| `TAK_PROTO` | | pytak protocol option, as upstream |
+| `FMI_BBOX` | `18,59,33,71` | Area (west,south,east,north). Upstream used 60°N, which left out the southern coast (Hanko, Utö) |
+| `WEATHER_PARAMETERS` | `t2m,ws_10min,wg_10min,wd_10min,rh,p_sea,vis,snow_aws` | FMI parameters |
+| `HISTORY_MINUTES` | `60` | Look-back for the latest value of each station |
+| `RADIATION` | `0` | `1` = also STUK radiation stations |
+| `RADIATION_ALERT_LEVEL` | `0.4` | µSv/h; stations at or above it get `ALERT` and `#alert` |
+| `UPDATE_INTERVAL` | `300` | Seconds between rounds (FMI updates every 10 min) |
+| `STALE_SECONDS` | `900` | Marker lifetime without new data |
+| `TIMEZONE` | `Europe/Helsinki` | Time zone of the observation time in the remarks |
+| `HEALTH_MAX_ERRORS` | `3` | Failed rounds in a row before the container is unhealthy |
+| `DEBUG` | `0` | Debug logging |
 
-## Certificates
-These are the server-issued certificate and key files. Before using, the password needs to be removed from the key file with `openssl rsa -in cert.key -out cert-nopw.key`. OpenSSL will ask for the key password which usually is "atakatak".
+## Running
 
-## Container use
-First, get your certificate and key and copy them to a suitable folder which needs to be added as a volume to the container.
+Image for amd64 and arm64: `ghcr.io/street3r/tak-feeder-weather-fmi:latest`.
 
-### Image
-The image is built for AMD64 and ARM64 and pushed to ghcr.io: *ghcr.io/sgofferj/tak-feeder-weather-fmi:latest*
-
-### Docker compose
-Here is an example for a docker-compose.yml file:
-```
-version: '2.0'
-
+```yaml
 services:
-  weather-fmi:
-    image: ghcr.io/sgofferj/tak-feeder-weather-fmi:latest
-    restart: always
-    networks:
-      - default
+  feeder-weather:
+    image: ghcr.io/street3r/tak-feeder-weather-fmi:latest
+    restart: unless-stopped
+    env_file: .env
     volumes:
-      - <path to data-directory>:/data:ro
-    environment:
-      - COT_URL=ssl://tak-server:8089
-      - PYTAK_TLS_CLIENT_CERT=/data/cert.pem
-      - PYTAK_TLS_CLIENT_KEY=/data/key.pem
-      - PYTAK_TLS_DONT_VERIFY=1
-      - TAK_PROTO=0
+      - ./certs:/data:ro
+```
 
-networks:
-  default:
+The container runs as uid 10001; the key must be readable by it.
+
+## Data
+
+Weather observations: Finnish Meteorological Institute open data,
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Radiation: STUK
+(Radiation and Nuclear Safety Authority) via FMI open data, CC BY 4.0. The
+source line is in every marker's remarks.
+
+## Credits and changes
+
+Original work © Stefan Gofferje,
+[tak-feeder-weather-fmi](https://github.com/sgofferj/tak-feeder-weather-fmi),
+used with his permission. The WFS parsing follows his
+[trakbridge-plugin-lightnings-fmi](https://github.com/sgofferj/trakbridge-plugin-lightnings-fmi).
+
+Changes in this fork (Street3r):
+
+- 2026-10-13
+  - **Fixed:** the query time window was computed once at start, so after the
+    first 20 minutes the feeder kept sending the same old observations.
+  - **Fixed:** an FMI outage or bad response no longer stops the feeder.
+  - **Fixed:** missing temperature showed as `nan°C`; missing values are left out.
+  - `fmiopendata` replaced with an own WFS parser; requests run without
+    blocking.
+  - More values: gusts, humidity, pressure, visibility, snow depth, observation
+    time. Callsign `FMI <station>`. Area extended to 59°N.
+  - Optional STUK radiation stations (the unfinished upstream code is replaced).
+  - `UPDATE_INTERVAL`, `STALE_SECONDS`; health check; unprivileged container;
+    tests and CI.
+
+## License
+
+GNU General Public License v3.0 or later, see [LICENSE](LICENSE).
