@@ -21,7 +21,10 @@ WEATHER_QUERY = "fmi::observations::weather::multipointcoverage"
 RADIATION_QUERY = "stuk::observations::external-radiation::latest::multipointcoverage"
 DEFAULT_PARAMETERS = "t2m,ws_10min,wg_10min,wd_10min,rh,p_sea,vis,snow_aws,wawa"
 WEATHER_TYPE = "b-w-A-t"  # as in upstream
-RADIATION_TYPE = "a-n-G"
+# Normal radiation stations look like weather stations; the alert type stays
+# a neutral ground point under the alert icon.
+RADIATION_TYPE = WEATHER_TYPE
+RADIATION_ALERT_TYPE = "a-n-G"
 # Alert look: ATAK built-in FEMA HAZMAT icon. Normal stations keep the plain
 # marker; only an alert changes the icon.
 RADIATION_ALERT_ICON = "f8f7f666-8b28-4b57-9fbb-e48e61d33b79/Iron Sites/HAZMAT.png"
@@ -36,11 +39,12 @@ class Settings:
     update_interval: float = 300.0
     stale_seconds: float = 900.0
     history_minutes: int = 60
+    weather: bool = True
     radiation: bool = False
     radiation_alert: float = 0.4
     radiation_alert_icon: str = RADIATION_ALERT_ICON
     radiation_alert_color: str = ""
-    radiation_alert_type: str = RADIATION_TYPE
+    radiation_alert_type: str = RADIATION_ALERT_TYPE
     timezone: str = "Europe/Helsinki"
     source_line: str = "Source: Finnish Meteorological Institute open data, CC BY 4.0"
     radiation_source_line: str = "Source: STUK / FMI open data, CC BY 4.0"
@@ -56,6 +60,7 @@ class Settings:
             update_interval=env_float("UPDATE_INTERVAL", d.update_interval),
             stale_seconds=env_float("STALE_SECONDS", d.stale_seconds),
             history_minutes=int(env_float("HISTORY_MINUTES", d.history_minutes)),
+            weather=env_bool("WEATHER", d.weather),
             radiation=env_bool("RADIATION", d.radiation),
             radiation_alert=env_float("RADIATION_ALERT_LEVEL", d.radiation_alert),
             radiation_alert_icon=env("RADIATION_ALERT_ICON", d.radiation_alert_icon),
@@ -174,21 +179,24 @@ class WeatherSource:
         started = time.monotonic()
         events: list[bytes] = []
         failed = False
+        stations: list[fmi.Station] = []
 
-        url = fmi.query_url(WEATHER_QUERY, now, self.s.history_minutes,
-                            bbox=self.s.bbox, parameters=self.s.parameters, timestep="10")
-        body = await self._get(url)
-        try:
-            stations = fmi.parse(body) if body else []
-        except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
-            LOG.warning("FMI weather response not understood: %s", exc)
-            stations = []
-        failed = body is None or not stations
-        events += [self.weather_event(st, now) for st in stations]
+        if self.s.weather:
+            url = fmi.query_url(WEATHER_QUERY, now, self.s.history_minutes,
+                                bbox=self.s.bbox, parameters=self.s.parameters, timestep="10")
+            body = await self._get(url)
+            try:
+                stations = fmi.parse(body) if body else []
+            except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
+                LOG.warning("FMI weather response not understood: %s", exc)
+                stations = []
+            failed = body is None or not stations
+            events += [self.weather_event(st, now) for st in stations]
 
         rad_count = 0
         if self.s.radiation:
             body = await self._get(fmi.query_url(RADIATION_QUERY, now, 0, bbox=self.s.bbox))
+            rad_failed = body is None
             try:
                 for st in fmi.parse(body) if body else []:
                     event = self.radiation_event(st, now)
@@ -197,6 +205,10 @@ class WeatherSource:
                         rad_count += 1
             except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
                 LOG.warning("STUK radiation response not understood: %s", exc)
+                rad_failed = True
+            # Radiation only counts for health when it is all this feeder does
+            if not self.s.weather:
+                failed = rad_failed or not rad_count
 
         LOG.info("Weather: %d stations, radiation: %d (%.1f s)",
                  len(stations), rad_count, time.monotonic() - started)

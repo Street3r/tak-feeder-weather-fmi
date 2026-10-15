@@ -117,6 +117,17 @@ class FeederTest(unittest.TestCase):
         with mock.patch.object(feeder, "fetch", mock.AsyncMock(side_effect=OSError("down"))):
             self.assertEqual(asyncio.run(src.events()), [])
 
+    def test_radiation_only(self) -> None:
+        sample = (SAMPLE.replace(b'name="t2m"', b'name="DR_PT10M_avg"')
+                  .replace(b"8.4 3.2", b"0.10 3.2"))
+        src = feeder.WeatherSource(feeder.Settings(weather=False, radiation=True))
+        with mock.patch.object(feeder, "fetch", mock.AsyncMock(return_value=sample)) as m:
+            events = [ET.fromstring(e) for e in asyncio.run(src.events())]
+        self.assertEqual(m.await_count, 1)  # no weather query
+        self.assertIn("stuk::", m.await_args.args[0])
+        self.assertTrue(events)
+        self.assertTrue(all(e.get("uid").startswith("fmiradiation.") for e in events))
+
     def test_radiation(self) -> None:
         sample = (SAMPLE.replace(b'name="t2m"', b'name="DR_PT10M_avg"')
                   .replace(b"8.4 3.2", b"0.45 3.2"))
@@ -136,6 +147,7 @@ class FeederTest(unittest.TestCase):
         st = {s.fmisid: s for s in fmi.parse(sample)}["101004"]
         ev = ET.fromstring(src.radiation_event(st, datetime.now(timezone.utc)))
         self.assertEqual(ev.find("detail/contact").get("callsign"), "STUK Helsinki Kumpula")
+        self.assertEqual(ev.get("type"), feeder.WEATHER_TYPE)  # same icon as weather stations
         self.assertIsNone(ev.find("detail/usericon"))
         self.assertIsNone(ev.find("detail/color"))
 
