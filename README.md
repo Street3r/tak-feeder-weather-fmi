@@ -18,7 +18,7 @@ by Stefan Gofferje.
 |---|---|---|
 | UID | `fmisensor.<fmisid>` (as upstream) | `fmiradiation.<fmisid>` |
 | Callsign | `FMI <station>` | `STUK <station>`, `… ALERT` above the alert level |
-| Type | `b-w-A-t` | `a-n-G` |
+| Type | `b-w-A-t` | `b-w-A-t` (weather station icon), `a-n-G` during an alert |
 | Remarks | temperature, wind and gusts, humidity, pressure, visibility, snow depth, observation time; `#weather #FMI` | dose rate (µSv/h, 10 min average), observation time; `#radiation #STUK` (+ `#alert`) |
 
 Missing values are left out. Each round fetches the last `HISTORY_MINUTES`

@@ -21,7 +21,10 @@ WEATHER_QUERY = "fmi::observations::weather::multipointcoverage"
 RADIATION_QUERY = "stuk::observations::external-radiation::latest::multipointcoverage"
 DEFAULT_PARAMETERS = "t2m,ws_10min,wg_10min,wd_10min,rh,p_sea,vis,snow_aws,wawa"
 WEATHER_TYPE = "b-w-A-t"  # as in upstream
-RADIATION_TYPE = "a-n-G"
+# Normal radiation stations look like weather stations; the alert type stays
+# a neutral ground point under the alert icon.
+RADIATION_TYPE = WEATHER_TYPE
+RADIATION_ALERT_TYPE = "a-n-G"
 # Alert look: ATAK built-in FEMA HAZMAT icon. Normal stations keep the plain
 # marker; only an alert changes the icon.
 RADIATION_ALERT_ICON = "f8f7f666-8b28-4b57-9fbb-e48e61d33b79/Iron Sites/HAZMAT.png"
@@ -41,7 +44,7 @@ class Settings:
     radiation_alert: float = 0.4
     radiation_alert_icon: str = RADIATION_ALERT_ICON
     radiation_alert_color: str = ""
-    radiation_alert_type: str = RADIATION_TYPE
+    radiation_alert_type: str = RADIATION_ALERT_TYPE
     timezone: str = "Europe/Helsinki"
     source_line: str = "Source: Finnish Meteorological Institute open data, CC BY 4.0"
     radiation_source_line: str = "Source: STUK / FMI open data, CC BY 4.0"

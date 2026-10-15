@@ -147,6 +147,7 @@ class FeederTest(unittest.TestCase):
         st = {s.fmisid: s for s in fmi.parse(sample)}["101004"]
         ev = ET.fromstring(src.radiation_event(st, datetime.now(timezone.utc)))
         self.assertEqual(ev.find("detail/contact").get("callsign"), "STUK Helsinki Kumpula")
+        self.assertEqual(ev.get("type"), feeder.WEATHER_TYPE)  # same icon as weather stations
         self.assertIsNone(ev.find("detail/usericon"))
         self.assertIsNone(ev.find("detail/color"))
 
