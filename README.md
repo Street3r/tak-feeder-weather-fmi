@@ -67,6 +67,7 @@ The tags are `#alert` plus `#wind`, `#frost`, `#freezing`, `#heat` or
 | `WIND_MEAN` | `14,21,33` | 10-minute mean wind, m/s |
 | `VISIBILITY` | `1000,200,50` | m (at or below) |
 | `FREEZING` | `1` | Freezing drizzle / rain from present weather (`wawa`) |
+| `WEATHER` | `1` | `0` = no weather stations, e.g. a second container that sends only radiation to its own group |
 | `RADIATION` | `0` | `1` = also STUK radiation stations |
 | `RADIATION_ALERT_LEVEL` | `0.4` | µSv/h; stations at or above it get `ALERT` and `#alert` |
 | `RADIATION_ALERT_ICON` | FEMA `HAZMAT.png` | ATAK iconset icon shown only during an alert (empty = no change) |

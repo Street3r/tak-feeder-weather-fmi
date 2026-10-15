@@ -36,6 +36,7 @@ class Settings:
     update_interval: float = 300.0
     stale_seconds: float = 900.0
     history_minutes: int = 60
+    weather: bool = True
     radiation: bool = False
     radiation_alert: float = 0.4
     radiation_alert_icon: str = RADIATION_ALERT_ICON
@@ -56,6 +57,7 @@ class Settings:
             update_interval=env_float("UPDATE_INTERVAL", d.update_interval),
             stale_seconds=env_float("STALE_SECONDS", d.stale_seconds),
             history_minutes=int(env_float("HISTORY_MINUTES", d.history_minutes)),
+            weather=env_bool("WEATHER", d.weather),
             radiation=env_bool("RADIATION", d.radiation),
             radiation_alert=env_float("RADIATION_ALERT_LEVEL", d.radiation_alert),
             radiation_alert_icon=env("RADIATION_ALERT_ICON", d.radiation_alert_icon),
@@ -174,21 +176,24 @@ class WeatherSource:
         started = time.monotonic()
         events: list[bytes] = []
         failed = False
+        stations: list[fmi.Station] = []
 
-        url = fmi.query_url(WEATHER_QUERY, now, self.s.history_minutes,
-                            bbox=self.s.bbox, parameters=self.s.parameters, timestep="10")
-        body = await self._get(url)
-        try:
-            stations = fmi.parse(body) if body else []
-        except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
-            LOG.warning("FMI weather response not understood: %s", exc)
-            stations = []
-        failed = body is None or not stations
-        events += [self.weather_event(st, now) for st in stations]
+        if self.s.weather:
+            url = fmi.query_url(WEATHER_QUERY, now, self.s.history_minutes,
+                                bbox=self.s.bbox, parameters=self.s.parameters, timestep="10")
+            body = await self._get(url)
+            try:
+                stations = fmi.parse(body) if body else []
+            except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
+                LOG.warning("FMI weather response not understood: %s", exc)
+                stations = []
+            failed = body is None or not stations
+            events += [self.weather_event(st, now) for st in stations]
 
         rad_count = 0
         if self.s.radiation:
             body = await self._get(fmi.query_url(RADIATION_QUERY, now, 0, bbox=self.s.bbox))
+            rad_failed = body is None
             try:
                 for st in fmi.parse(body) if body else []:
                     event = self.radiation_event(st, now)
@@ -197,6 +202,10 @@ class WeatherSource:
                         rad_count += 1
             except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
                 LOG.warning("STUK radiation response not understood: %s", exc)
+                rad_failed = True
+            # Radiation only counts for health when it is all this feeder does
+            if not self.s.weather:
+                failed = rad_failed or not rad_count
 
         LOG.info("Weather: %d stations, radiation: %d (%.1f s)",
                  len(stations), rad_count, time.monotonic() - started)
