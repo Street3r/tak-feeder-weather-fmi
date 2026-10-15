@@ -117,6 +117,37 @@ class FeederTest(unittest.TestCase):
         with mock.patch.object(feeder, "fetch", mock.AsyncMock(side_effect=OSError("down"))):
             self.assertEqual(asyncio.run(src.events()), [])
 
+    def test_fetches_every_fetch_interval_and_resends_between(self) -> None:
+        src = feeder.WeatherSource(feeder.Settings(fetch_interval=300))
+        clock = mock.Mock(return_value=1000.0)
+        with mock.patch.object(feeder, "fetch", mock.AsyncMock(return_value=SAMPLE)) as m, \
+                mock.patch.object(feeder.time, "monotonic", clock):
+            first = asyncio.run(src.events())
+            clock.return_value = 1060.0
+            second = asyncio.run(src.events())
+            self.assertEqual(m.await_count, 1)  # re-sent from the cache
+            clock.return_value = 1300.0
+            asyncio.run(src.events())
+            self.assertEqual(m.await_count, 2)
+        uids = sorted(ET.fromstring(e).get("uid") for e in first)
+        self.assertEqual(sorted(ET.fromstring(e).get("uid") for e in second), uids)
+
+    def test_failed_fetch_resends_cache_for_three_fetch_intervals(self) -> None:
+        src = feeder.WeatherSource(feeder.Settings(fetch_interval=300))
+        clock = mock.Mock(return_value=1000.0)
+        with mock.patch.object(feeder.time, "monotonic", clock):
+            with mock.patch.object(feeder, "fetch", mock.AsyncMock(return_value=SAMPLE)):
+                self.assertEqual(len(asyncio.run(src.events())), 2)
+            down = mock.AsyncMock(side_effect=OSError("down"))
+            with mock.patch.object(feeder, "fetch", down):
+                clock.return_value = 1500.0
+                self.assertEqual(len(asyncio.run(src.events())), 2)
+                clock.return_value = 1560.0  # retried every round
+                self.assertEqual(len(asyncio.run(src.events())), 2)
+                self.assertEqual(down.await_count, 2)
+                clock.return_value = 1901.0  # last good fetch 3 fetch intervals ago
+                self.assertEqual(asyncio.run(src.events()), [])
+
     def test_radiation_only(self) -> None:
         sample = (SAMPLE.replace(b'name="t2m"', b'name="DR_PT10M_avg"')
                   .replace(b"8.4 3.2", b"0.10 3.2"))

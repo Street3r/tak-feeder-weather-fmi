@@ -73,10 +73,11 @@ The tags are `#alert` plus `#wind`, `#frost`, `#freezing`, `#heat` or
 | `RADIATION_ALERT_ICON` | FEMA `HAZMAT.png` | ATAK iconset icon shown only during an alert (empty = no change) |
 | `RADIATION_ALERT_COLOR` | | ARGB colour during an alert, e.g. `-65536` (red) |
 | `RADIATION_ALERT_TYPE` | `a-n-G` | CoT type during an alert, e.g. `b-l-c-n-r` (radiation alarm) |
-| `UPDATE_INTERVAL` | `300` | Seconds between rounds (FMI updates every 10 min) |
-| `STALE_SECONDS` | `900` | Marker lifetime without new data |
+| `UPDATE_INTERVAL` | `60` | Seconds between send rounds; each round re-sends the latest data, so a client that connects sees every station within one round |
+| `FETCH_INTERVAL` | `300` | Seconds between FMI/STUK fetches (FMI updates every 10 min). A failed fetch is retried the next round; the last good data is sent for at most 3 fetch intervals |
+| `STALE_SECONDS` | `300` | Marker lifetime without new data |
 | `TIMEZONE` | `Europe/Helsinki` | Time zone of the observation time in the remarks |
-| `HEALTH_MAX_ERRORS` | `3` | Failed rounds in a row before the container is unhealthy |
+| `HEALTH_MAX_ERRORS` | `3` | Failed fetches in a row before the container is unhealthy |
 | `DEBUG` | `0` | Debug logging |
 
 ## Running
@@ -133,6 +134,10 @@ Changes in this fork (Street3r):
   - Every event of a send round reaches TAK. pytak's send queue holds 100
     events and dropped the oldest when full, so rounds of more than 100
     lost the rest.
+  - Fetching and sending are separate: FMI and STUK are fetched every
+    `FETCH_INTERVAL` (300 s) and the latest data is re-sent every
+    `UPDATE_INTERVAL` (now 60 s), so a client that connects sees the stations
+    within a minute. `STALE_SECONDS` default 900 -> 300.
 
 ## License
 

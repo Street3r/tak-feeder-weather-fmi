@@ -36,8 +36,9 @@ class Settings:
 
     bbox: str = "18,59,33,71"
     parameters: str = DEFAULT_PARAMETERS
-    update_interval: float = 300.0
-    stale_seconds: float = 900.0
+    update_interval: float = 60.0
+    fetch_interval: float = 300.0
+    stale_seconds: float = 300.0
     history_minutes: int = 60
     weather: bool = True
     radiation: bool = False
@@ -58,6 +59,7 @@ class Settings:
             bbox=env("FMI_BBOX", d.bbox),
             parameters=env("WEATHER_PARAMETERS", d.parameters),
             update_interval=env_float("UPDATE_INTERVAL", d.update_interval),
+            fetch_interval=env_float("FETCH_INTERVAL", d.fetch_interval),
             stale_seconds=env_float("STALE_SECONDS", d.stale_seconds),
             history_minutes=int(env_float("HISTORY_MINUTES", d.history_minutes)),
             weather=env_bool("WEATHER", d.weather),
@@ -102,13 +104,23 @@ def weather_lines(values: dict[str, float]) -> list[Optional[str]]:
 
 
 class WeatherSource:
-    """Fetches observations every round and builds CoT."""
+    """Fetches observations every FETCH_INTERVAL and sends the latest ones
+    every round with a fresh time, so a client that connects sees every
+    station within one round. A failed fetch is retried the next round; the
+    last good data is sent for at most CACHE_ROUNDS fetch intervals."""
+
+    CACHE_ROUNDS = 3
 
     def __init__(self, settings: Settings, health: Optional[Health] = None) -> None:
         self.s = settings
         self.health = health
         self.tz = ZoneInfo(settings.timezone)
         self.headers = {"User-Agent": f"tak-feeder-weather-fmi/{__version__}"}
+        self.stations: list[fmi.Station] = []
+        self.radiation_stations: list[fmi.Station] = []
+        # monotonic time of the last good fetch of each query
+        self.stations_at: Optional[float] = None
+        self.radiation_at: Optional[float] = None
 
     def _local(self, when: Optional[datetime]) -> Optional[str]:
         return when.astimezone(self.tz).strftime("%H:%M") if when else None
@@ -173,50 +185,81 @@ class WeatherSource:
             LOG.warning("FMI request failed: %s", exc)
             return None
 
+    def _due(self, fetched_at: Optional[float], mono: float) -> bool:
+        return fetched_at is None or mono - fetched_at >= self.s.fetch_interval
+
+    def _fresh(self, fetched_at: Optional[float], mono: float) -> bool:
+        return (fetched_at is not None
+                and mono - fetched_at <= self.CACHE_ROUNDS * self.s.fetch_interval)
+
+    async def _fetch_weather(self, now: datetime, mono: float) -> bool:
+        url = fmi.query_url(WEATHER_QUERY, now, self.s.history_minutes,
+                            bbox=self.s.bbox, parameters=self.s.parameters, timestep="10")
+        body = await self._get(url)
+        try:
+            stations = fmi.parse(body) if body else []
+        except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
+            LOG.warning("FMI weather response not understood: %s", exc)
+            stations = []
+        if not stations:
+            return False
+        self.stations, self.stations_at = stations, mono
+        return True
+
+    async def _fetch_radiation(self, now: datetime, mono: float) -> bool:
+        body = await self._get(fmi.query_url(RADIATION_QUERY, now, 0, bbox=self.s.bbox))
+        if body is None:
+            return False
+        try:
+            stations = fmi.parse(body)
+        except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
+            LOG.warning("STUK radiation response not understood: %s", exc)
+            return False
+        self.radiation_stations, self.radiation_at = stations, mono
+        return True
+
     async def events(self) -> list[bytes]:
-        """Source protocol: fetch and convert."""
+        """Source protocol: fetch when due, then convert the latest data."""
         now = datetime.now(timezone.utc)
-        started = time.monotonic()
-        events: list[bytes] = []
+        mono = time.monotonic()
+        started = mono
+        fetched = False
         failed = False
-        stations: list[fmi.Station] = []
 
-        if self.s.weather:
-            url = fmi.query_url(WEATHER_QUERY, now, self.s.history_minutes,
-                                bbox=self.s.bbox, parameters=self.s.parameters, timestep="10")
-            body = await self._get(url)
-            try:
-                stations = fmi.parse(body) if body else []
-            except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
-                LOG.warning("FMI weather response not understood: %s", exc)
-                stations = []
-            failed = body is None or not stations
-            events += [self.weather_event(st, now) for st in stations]
-
-        rad_count = 0
-        if self.s.radiation:
-            body = await self._get(fmi.query_url(RADIATION_QUERY, now, 0, bbox=self.s.bbox))
-            rad_failed = body is None
-            try:
-                for st in fmi.parse(body) if body else []:
-                    event = self.radiation_event(st, now)
-                    if event:
-                        events.append(event)
-                        rad_count += 1
-            except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
-                LOG.warning("STUK radiation response not understood: %s", exc)
-                rad_failed = True
+        if self.s.weather and self._due(self.stations_at, mono):
+            fetched = True
+            failed = not await self._fetch_weather(now, mono)
+        if self.s.radiation and self._due(self.radiation_at, mono):
+            fetched = True
+            rad_failed = not await self._fetch_radiation(now, mono)
             # Radiation only counts for health when it is all this feeder does
             if not self.s.weather:
-                failed = rad_failed or not rad_count
+                failed = rad_failed
 
-        LOG.info("Weather: %d stations, radiation: %d (%.1f s)",
-                 len(stations), rad_count, time.monotonic() - started)
-        if self.health is not None:
-            if failed:
-                self.health.error()
-            else:
-                self.health.ok()
+        events: list[bytes] = []
+        weather_count = rad_count = 0
+        if self.s.weather and self._fresh(self.stations_at, mono):
+            events += [self.weather_event(st, now) for st in self.stations]
+            weather_count = len(self.stations)
+        if self.s.radiation and self._fresh(self.radiation_at, mono):
+            for st in self.radiation_stations:
+                event = self.radiation_event(st, now)
+                if event:
+                    events.append(event)
+                    rad_count += 1
+        if not self.s.weather and fetched and not rad_count:
+            failed = True
+
+        if fetched:
+            LOG.info("Weather: %d stations, radiation: %d (%.1f s)",
+                     weather_count, rad_count, time.monotonic() - started)
+            if self.health is not None:
+                if failed:
+                    self.health.error()
+                else:
+                    self.health.ok()
+        else:
+            LOG.debug("Re-sent weather: %d stations, radiation: %d", weather_count, rad_count)
         return events
 
     async def start(self) -> None:
