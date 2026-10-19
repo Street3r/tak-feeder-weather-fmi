@@ -22,7 +22,7 @@ async def main() -> None:
     settings = Settings.from_env()
     LOG.info("tak-feeder-weather-fmi %s -> %s (radiation %s)", __version__, tak.cot_url,
              "on" if settings.radiation else "off")
-    await run_feeder(tak, WeatherSource(settings, Health()), settings.update_interval)
+    await run_feeder(tak, WeatherSource(settings, Health()), settings.send.static)
 
 
 def run() -> None:
