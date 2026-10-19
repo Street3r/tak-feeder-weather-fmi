@@ -13,7 +13,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from . import __version__, alerts, fmi
-from .common import Health, cot_event, env, env_bool, env_float, fetch, remarks_text
+from .common import Health, SendPolicy, cot_event, env, env_bool, env_float, fetch, remarks_text
 
 LOG = logging.getLogger("tak_feeder_weather_fmi")
 
@@ -28,6 +28,17 @@ RADIATION_ALERT_TYPE = "a-n-G"
 # Alert look: ATAK built-in FEMA HAZMAT icon. Normal stations keep the plain
 # marker; only an alert changes the icon.
 RADIATION_ALERT_ICON = "f8f7f666-8b28-4b57-9fbb-e48e61d33b79/Iron Sites/HAZMAT.png"
+# FMI observations come in 10-minute steps; faster requests only use up the
+# shared FMI quota (20,000 requests a day).
+MIN_FETCH_INTERVAL = 300.0
+
+
+def fetch_interval(value: float) -> float:
+    """FETCH_INTERVAL, raised to MIN_FETCH_INTERVAL."""
+    if value < MIN_FETCH_INTERVAL:
+        LOG.warning("FETCH_INTERVAL=%g is below the minimum, using %g", value, MIN_FETCH_INTERVAL)
+        return MIN_FETCH_INTERVAL
+    return value
 
 
 @dataclass
@@ -36,9 +47,8 @@ class Settings:
 
     bbox: str = "18,59,33,71"
     parameters: str = DEFAULT_PARAMETERS
-    update_interval: float = 60.0
+    send: SendPolicy = field(default_factory=SendPolicy)
     fetch_interval: float = 300.0
-    stale_seconds: float = 300.0
     history_minutes: int = 60
     weather: bool = True
     radiation: bool = False
@@ -58,9 +68,9 @@ class Settings:
         return cls(
             bbox=env("FMI_BBOX", d.bbox),
             parameters=env("WEATHER_PARAMETERS", d.parameters),
-            update_interval=env_float("UPDATE_INTERVAL", d.update_interval),
-            fetch_interval=env_float("FETCH_INTERVAL", d.fetch_interval),
-            stale_seconds=env_float("STALE_SECONDS", d.stale_seconds),
+            send=SendPolicy.from_env(moving_aliases=(), stationary_aliases=(),
+                                     static_aliases=("UPDATE_INTERVAL",)),
+            fetch_interval=fetch_interval(env_float("FETCH_INTERVAL", d.fetch_interval)),
             history_minutes=int(env_float("HISTORY_MINUTES", d.history_minutes)),
             weather=env_bool("WEATHER", d.weather),
             radiation=env_bool("RADIATION", d.radiation),
@@ -145,7 +155,7 @@ class WeatherSource:
             lat=st.lat, lon=st.lon,
             callsign=callsign,
             remarks=remarks_text(lines, self.s.source_line, tags),
-            stale=self.s.stale_seconds,
+            stale=self.s.send.stale_for(self.s.send.static),
             how="m-c",
             icon=top.icon if top else "",
             color=top.color if top else "",
@@ -171,7 +181,7 @@ class WeatherSource:
             lat=st.lat, lon=st.lon,
             callsign=f"STUK {st.name}" + (" ALERT" if alert else ""),
             remarks=remarks_text(lines, self.s.radiation_source_line, tags),
-            stale=self.s.stale_seconds,
+            stale=self.s.send.stale_for(self.s.send.static),
             how="m-c",
             icon=self.s.radiation_alert_icon if alert else "",
             color=self.s.radiation_alert_color if alert else "",

@@ -195,5 +195,15 @@ class FeederTest(unittest.TestCase):
         self.assertEqual(ev.find("detail/color").get("argb"), "-65536")
 
 
+
+class IntervalTest(unittest.TestCase):
+    def test_env(self) -> None:
+        env = {"FETCH_INTERVAL": "60", "UPDATE_INTERVAL": "90"}
+        with mock.patch.dict("os.environ", env, clear=True):
+            settings = feeder.Settings.from_env()
+        self.assertEqual(settings.fetch_interval, 300.0)  # FMI minimum
+        self.assertEqual(settings.send.static, 90.0)  # old name still works
+
+
 if __name__ == "__main__":
     unittest.main()
