@@ -6,7 +6,8 @@
 
 Sends the latest weather observations of the Finnish Meteorological
 Institute (FMI) stations to a TAK server as CoT. Optionally also the external
-radiation dose rates of STUK's monitoring stations.
+radiation dose rates of STUK's monitoring stations and the real-time state of
+the Finnish power system from Fingrid.
 
 Fork of [sgofferj/tak-feeder-weather-fmi](https://github.com/sgofferj/tak-feeder-weather-fmi)
 by Stefan Gofferje.
@@ -19,6 +20,13 @@ by Stefan Gofferje.
 | Callsign | `FMI <station>` | `STUK <station>`, `… ALERT` above the alert level |
 | Type | `b-w-A-t` | `b-w-A-t` (weather station icon), `a-n-G` during an alert |
 | Remarks | temperature, wind and gusts, humidity, pressure, visibility, snow depth, observation time; `#weather #FMI` | dose rate (µSv/h, 10 min average), observation time; `#radiation #STUK` (+ `#alert`) |
+
+With `FINGRID_API_KEY` set, one more marker shows the Fingrid power system
+state: UID `fingrid.powersystem`, callsign `FINGRID Power system <STATE>`, type
+`a-n-G`, coloured yellow / red / black / blue (green has no colour or icon).
+It is one national value, so the marker sits at `FINGRID_LAT`/`FINGRID_LON`
+(default near the centre of Finland). With `ONLY_ALERTS=1` it is sent only at
+`FINGRID_ALERT_LEVEL` or above.
 
 Missing values are left out. Each round fetches the last `HISTORY_MINUTES`
 minutes, so the data stays current.
@@ -72,6 +80,10 @@ The tags are `#alert` plus `#wind`, `#frost`, `#freezing`, `#heat` or
 | `RADIATION_ALERT_ICON` | FEMA `HAZMAT.png` | ATAK iconset icon shown only during an alert (empty = no change) |
 | `RADIATION_ALERT_COLOR` | | ARGB colour during an alert, e.g. `-65536` (red) |
 | `RADIATION_ALERT_TYPE` | `a-n-G` | CoT type during an alert, e.g. `b-l-c-n-r` (radiation alarm) |
+| `FINGRID_API_KEY` | | Fingrid open data API key (free registration at [data.fingrid.fi](https://data.fingrid.fi)); empty = no power system marker |
+| `FINGRID_ALERT_LEVEL` | `3` | State that counts as an alert: `2` yellow, `3` red, `4` black, `5` blue (restoring) |
+| `FINGRID_INTERVAL` | `180` | Seconds between Fingrid reads, min 60 (Fingrid updates every 3 min; the free key allows 10,000 calls a day) |
+| `FINGRID_LAT` / `FINGRID_LON` | `64.0` / `26.0` | Position of the national marker |
 | `ONLY_ALERTS` | `0` | `1` = send only stations in alert state, e.g. a second container for an alerts group. The markers are the same as in the full feed (same UID), so a user who sees both gets one marker; when the alert ends the marker goes stale |
 | `SEND_STATIC_INTERVAL` | `60` | Seconds between send rounds, min 30 (old name `UPDATE_INTERVAL`); each round re-sends the latest data, so a client that connects sees every station within one round |
 | `FETCH_INTERVAL` | `300` | Seconds between FMI/STUK fetches, min 300 (FMI updates every 10 min). A failed fetch is retried the next round; the last good data is sent for at most 3 fetch intervals |

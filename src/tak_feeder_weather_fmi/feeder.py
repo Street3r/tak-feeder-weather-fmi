@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright Stefan Gofferje (tak-feeder-weather-fmi)
 # Copyright (C) 2026 Street3r (changes, see README)
-"""FMI weather observations (and optionally STUK radiation) -> CoT."""
+"""FMI weather observations (and optionally STUK radiation and the Fingrid
+power system state) -> CoT."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from . import __version__, alerts, fmi
+from . import __version__, alerts, fingrid, fmi
 from .common import Health, SendPolicy, cot_event, env, env_bool, env_float, fetch, remarks_text
 
 LOG = logging.getLogger("tak_feeder_weather_fmi")
@@ -31,6 +32,10 @@ RADIATION_ALERT_ICON = "f8f7f666-8b28-4b57-9fbb-e48e61d33b79/Iron Sites/HAZMAT.p
 # FMI observations come in 10-minute steps; faster requests only use up the
 # shared FMI quota (20,000 requests a day).
 MIN_FETCH_INTERVAL = 300.0
+# Fingrid publishes the power system state every 3 minutes
+MIN_FINGRID_INTERVAL = 60.0
+FINGRID_TYPE = "a-n-G"
+FINGRID_ICON = f"{alerts._DEFAULT_SET}/Transportation/Warning.png"  # pylint: disable=protected-access
 
 
 def fetch_interval(value: float) -> float:
@@ -57,9 +62,16 @@ class Settings:
     radiation_alert_icon: str = RADIATION_ALERT_ICON
     radiation_alert_color: str = ""
     radiation_alert_type: str = RADIATION_ALERT_TYPE
+    fingrid_key: str = ""
+    fingrid_alert_level: int = fingrid.RED
+    fingrid_interval: float = 180.0
+    # One national marker; default near the geographic centre of Finland
+    fingrid_lat: float = 64.0
+    fingrid_lon: float = 26.0
     timezone: str = "Europe/Helsinki"
     source_line: str = "Source: Finnish Meteorological Institute open data, CC BY 4.0"
     radiation_source_line: str = "Source: STUK / FMI open data, CC BY 4.0"
+    fingrid_source_line: str = "Source: Fingrid open data, CC BY 4.0"
     alerts: alerts.AlertSettings = field(default_factory=alerts.AlertSettings)
 
     @classmethod
@@ -80,9 +92,16 @@ class Settings:
             radiation_alert_icon=env("RADIATION_ALERT_ICON", d.radiation_alert_icon),
             radiation_alert_color=env("RADIATION_ALERT_COLOR", d.radiation_alert_color),
             radiation_alert_type=env("RADIATION_ALERT_TYPE", d.radiation_alert_type),
+            fingrid_key=env("FINGRID_API_KEY", d.fingrid_key),
+            fingrid_alert_level=int(env_float("FINGRID_ALERT_LEVEL", d.fingrid_alert_level)),
+            fingrid_interval=max(MIN_FINGRID_INTERVAL,
+                                 env_float("FINGRID_INTERVAL", d.fingrid_interval)),
+            fingrid_lat=env_float("FINGRID_LAT", d.fingrid_lat),
+            fingrid_lon=env_float("FINGRID_LON", d.fingrid_lon),
             timezone=env("TIMEZONE", d.timezone),
             source_line=env("SOURCE_LINE", d.source_line),
             radiation_source_line=env("RADIATION_SOURCE_LINE", d.radiation_source_line),
+            fingrid_source_line=env("FINGRID_SOURCE_LINE", d.fingrid_source_line),
             alerts=alerts.AlertSettings.from_env(),
         )
 
@@ -133,6 +152,9 @@ class WeatherSource:
         # monotonic time of the last good fetch of each query
         self.stations_at: Optional[float] = None
         self.radiation_at: Optional[float] = None
+        self.grid: Optional[fingrid.State] = None
+        self.grid_since: Optional[datetime] = None  # when the current state began
+        self.grid_at: Optional[float] = None
 
     def _local(self, when: Optional[datetime]) -> Optional[str]:
         return when.astimezone(self.tz).strftime("%H:%M") if when else None
@@ -203,6 +225,52 @@ class WeatherSource:
             color=self.s.radiation_alert_color if alert else "",
             now=now,
         )
+
+    def fingrid_alerting(self) -> bool:
+        """True if the power system state is at FINGRID_ALERT_LEVEL or above."""
+        return self.grid is not None and self.grid.value >= self.s.fingrid_alert_level
+
+    def fingrid_event(self, now: datetime) -> Optional[bytes]:
+        """CoT for the national power system state (one marker)."""
+        if self.grid is None:
+            return None
+        value = self.grid.value
+        name, meaning = fingrid.STATES[value]
+        alert = self.fingrid_alerting()
+        lines = [
+            f"Power system state: {name.upper()} ({meaning})",
+            f"Since: {self.grid_since.astimezone(self.tz):%d.%m. %H:%M}" if self.grid_since else None,
+            "State of the whole Finnish power system; the marker position is not a location.",
+        ]
+        tags = ["fingrid", "power"] + (["alert"] if alert else [])
+        return cot_event(
+            uid="fingrid.powersystem",
+            cot_type=FINGRID_TYPE,
+            lat=self.s.fingrid_lat, lon=self.s.fingrid_lon,
+            callsign=f"FINGRID Power system {name.upper()}",
+            remarks=remarks_text(lines, self.s.fingrid_source_line, tags),
+            stale=self.s.send.stale_for(self.s.send.static),
+            how="m-c",
+            icon=FINGRID_ICON if value != fingrid.GREEN else "",
+            color=fingrid.COLORS.get(value, ""),
+            now=now,
+        )
+
+    async def _fetch_fingrid(self, now: datetime, mono: float) -> None:
+        """Latest power system state. Failures are logged only: the weather
+        and radiation fetches decide the container health."""
+        try:
+            body = await fetch(fingrid.LATEST_URL, {**self.headers, "x-api-key": self.s.fingrid_key},
+                               timeout=30)
+            state = fingrid.parse(body)
+        except Exception as exc:  # noqa: BLE001  pylint: disable=broad-exception-caught
+            LOG.warning("Fingrid request failed: %s", exc)
+            return
+        if self.grid is None or state.value != self.grid.value:
+            if self.grid is not None:
+                LOG.info("Fingrid power system state %d -> %d", self.grid.value, state.value)
+            self.grid_since = state.since or now
+        self.grid, self.grid_at = state, mono
 
     async def _get(self, url: str) -> Optional[bytes]:
         try:
@@ -282,6 +350,15 @@ class WeatherSource:
             rad_count = sum(1 for st in self.radiation_stations if self.dose_rate(st) is not None)
         if not self.s.weather and fetched and not rad_count:
             failed = True
+        if self.s.fingrid_key:
+            if self.grid_at is None or mono - self.grid_at >= self.s.fingrid_interval:
+                await self._fetch_fingrid(now, mono)
+            fresh = (self.grid_at is not None
+                     and mono - self.grid_at <= self.CACHE_ROUNDS * self.s.fingrid_interval)
+            if fresh and (not self.s.only_alerts or self.fingrid_alerting()):
+                event = self.fingrid_event(now)
+                if event:
+                    events.append(event)
 
         if fetched:
             LOG.info("Weather: %d stations, radiation: %d, sent %d (%.1f s)",

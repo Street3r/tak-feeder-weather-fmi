@@ -233,6 +233,57 @@ class FeederTest(unittest.TestCase):
         self.assertEqual([e.get("uid") for e in events], ["fmiradiation.101004"])
         self.assertIn("#alert", events[0].find("detail/remarks").text)
 
+    @staticmethod
+    def _fetch_with_grid(state: int, weather: bytes = SAMPLE) -> mock.AsyncMock:
+        grid = ('{"datasetId": 209, "startTime": "2026-10-24T19:54:00.000Z", '
+                f'"value": {state}}}').encode()
+
+        async def fake(url, headers=None, timeout=30):
+            if "fingrid" in url:
+                assert headers["x-api-key"] == "k"
+                return grid
+            return weather
+        return mock.AsyncMock(side_effect=fake)
+
+    def test_fingrid_only_alerts(self) -> None:
+        settings = feeder.Settings(weather=False, radiation=True, only_alerts=True,
+                                   fingrid_key="k")
+        green = feeder.WeatherSource(settings)
+        with mock.patch.object(feeder, "fetch", self._fetch_with_grid(1)) as m:
+            self.assertEqual(asyncio.run(green.events()), [])
+        self.assertTrue(any("fingrid" in c.args[0] for c in m.await_args_list))
+        red = feeder.WeatherSource(settings)
+        with mock.patch.object(feeder, "fetch", self._fetch_with_grid(3)):
+            events = [ET.fromstring(e) for e in asyncio.run(red.events())]
+        ev = {e.get("uid"): e for e in events}["fingrid.powersystem"]
+        self.assertEqual(ev.find("detail/contact").get("callsign"), "FINGRID Power system RED")
+        self.assertEqual(ev.find("detail/color").get("argb"), "-65536")
+        self.assertIn("#alert", ev.find("detail/remarks").text)
+
+    def test_fingrid_full_feed_and_off_without_key(self) -> None:
+        src = feeder.WeatherSource(feeder.Settings(fingrid_key="k"))
+        with mock.patch.object(feeder, "fetch", self._fetch_with_grid(1)):
+            uids = [ET.fromstring(e).get("uid") for e in asyncio.run(src.events())]
+        self.assertIn("fingrid.powersystem", uids)  # green shown when not alerts-only
+        off = feeder.WeatherSource(feeder.Settings())
+        with mock.patch.object(feeder, "fetch", self._fetch_with_grid(3)) as m:
+            asyncio.run(off.events())
+        self.assertFalse(any("fingrid" in c.args[0] for c in m.await_args_list))
+
+    def test_fingrid_failure_does_not_change_health(self) -> None:
+        health = mock.Mock()
+        src = feeder.WeatherSource(feeder.Settings(fingrid_key="k"), health)
+
+        async def fake(url, headers=None, timeout=30):
+            if "fingrid" in url:
+                raise OSError("down")
+            return SAMPLE
+        with mock.patch.object(feeder, "fetch", mock.AsyncMock(side_effect=fake)):
+            events = asyncio.run(src.events())
+        self.assertEqual(len(events), 2)  # weather stations only
+        health.ok.assert_called_once()
+        health.error.assert_not_called()
+
 
 class IntervalTest(unittest.TestCase):
     def test_env(self) -> None:
