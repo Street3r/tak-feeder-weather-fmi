@@ -195,6 +195,44 @@ class FeederTest(unittest.TestCase):
         self.assertEqual(ev.find("detail/color").get("argb"), "-65536")
 
 
+    def test_only_alerts_weather(self) -> None:
+        # Harmaja 9.0 °C is orange, Kumpula 8.4 °C only yellow (not sent)
+        heat = feeder.alerts.AlertSettings(heat=(5, 8.5, 20))
+        full = feeder.WeatherSource(feeder.Settings(alerts=heat))
+        only = feeder.WeatherSource(feeder.Settings(alerts=heat, only_alerts=True))
+        with mock.patch.object(feeder, "fetch", mock.AsyncMock(return_value=SAMPLE)):
+            full_events = {ET.fromstring(e).get("uid"): e for e in asyncio.run(full.events())}
+            only_events = [ET.fromstring(e) for e in asyncio.run(only.events())]
+        self.assertEqual([e.get("uid") for e in only_events], ["fmisensor.100996"])
+        # the same marker as in the full feed
+        sent = only_events[0]
+        same = ET.fromstring(full_events["fmisensor.100996"])
+        self.assertEqual(sent.find("detail/contact").get("callsign"),
+                         same.find("detail/contact").get("callsign"))
+        self.assertEqual(sent.find("detail/remarks").text, same.find("detail/remarks").text)
+
+    def test_only_alerts_radiation(self) -> None:
+        def sample(kumpula: bytes, harmaja: bytes) -> bytes:
+            return (SAMPLE.replace(b'name="t2m"', b'name="DR_PT10M_avg"')
+                    .replace(b"8.4 3.2", kumpula + b" 3.2").replace(b"9.0 7.5", harmaja + b" 7.5"))
+        health = mock.Mock()
+        src = feeder.WeatherSource(
+            feeder.Settings(weather=False, radiation=True, only_alerts=True, fetch_interval=300),
+            health)
+        clock = mock.Mock(return_value=1000.0)
+        with mock.patch.object(feeder.time, "monotonic", clock):
+            with mock.patch.object(feeder, "fetch",
+                                   mock.AsyncMock(return_value=sample(b"0.10", b"0.05"))):
+                self.assertEqual(asyncio.run(src.events()), [])
+            health.ok.assert_called_once()  # nothing alerting is not an error
+            health.error.assert_not_called()
+            clock.return_value = 1300.0
+            with mock.patch.object(feeder, "fetch",
+                                   mock.AsyncMock(return_value=sample(b"0.45", b"0.05"))):
+                events = [ET.fromstring(e) for e in asyncio.run(src.events())]
+        self.assertEqual([e.get("uid") for e in events], ["fmiradiation.101004"])
+        self.assertIn("#alert", events[0].find("detail/remarks").text)
+
 
 class IntervalTest(unittest.TestCase):
     def test_env(self) -> None:

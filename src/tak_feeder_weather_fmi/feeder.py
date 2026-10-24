@@ -52,6 +52,7 @@ class Settings:
     history_minutes: int = 60
     weather: bool = True
     radiation: bool = False
+    only_alerts: bool = False
     radiation_alert: float = 0.4
     radiation_alert_icon: str = RADIATION_ALERT_ICON
     radiation_alert_color: str = ""
@@ -74,6 +75,7 @@ class Settings:
             history_minutes=int(env_float("HISTORY_MINUTES", d.history_minutes)),
             weather=env_bool("WEATHER", d.weather),
             radiation=env_bool("RADIATION", d.radiation),
+            only_alerts=env_bool("ONLY_ALERTS", d.only_alerts),
             radiation_alert=env_float("RADIATION_ALERT_LEVEL", d.radiation_alert),
             radiation_alert_icon=env("RADIATION_ALERT_ICON", d.radiation_alert_icon),
             radiation_alert_color=env("RADIATION_ALERT_COLOR", d.radiation_alert_color),
@@ -135,10 +137,14 @@ class WeatherSource:
     def _local(self, when: Optional[datetime]) -> Optional[str]:
         return when.astimezone(self.tz).strftime("%H:%M") if when else None
 
+    def weather_alerts(self, st: fmi.Station, now: datetime) -> list[alerts.Alert]:
+        """Alerts of one weather station right now, highest level first."""
+        return alerts.evaluate(st.values, st.lat, st.time or now, self.s.alerts)
+
     def weather_event(self, st: fmi.Station, now: datetime) -> bytes:
         """CoT for one weather station. A normal station is a plain marker; an
         alert changes the icon (tinted with the level colour) and callsign."""
-        found = alerts.evaluate(st.values, st.lat, st.time or now, self.s.alerts)
+        found = self.weather_alerts(st, now)
         lines: list[Optional[str]] = [
             f"ALERT ({alerts.LEVEL_NAMES[a.level]}) {a.text}" for a in found]
         lines += [f"Station: {st.name}", *weather_lines(st.values)]
@@ -162,9 +168,19 @@ class WeatherSource:
             now=now,
         )
 
+    @staticmethod
+    def dose_rate(st: fmi.Station) -> Optional[float]:
+        """10-minute average dose rate (µSv/h) of a radiation station."""
+        return st.values.get("DR_PT10M_avg", st.values.get("DRS1_PT10M_avg"))
+
+    def radiation_alerting(self, st: fmi.Station) -> bool:
+        """True if the station is at or above RADIATION_ALERT_LEVEL."""
+        dose = self.dose_rate(st)
+        return dose is not None and dose >= self.s.radiation_alert
+
     def radiation_event(self, st: fmi.Station, now: datetime) -> Optional[bytes]:
         """CoT for one radiation station (dose rate in µSv/h)."""
-        dose = st.values.get("DR_PT10M_avg", st.values.get("DRS1_PT10M_avg"))
+        dose = self.dose_rate(st)
         if dose is None:
             return None
         alert = dose >= self.s.radiation_alert
@@ -246,30 +262,38 @@ class WeatherSource:
             if not self.s.weather:
                 failed = rad_failed
 
+        # ONLY_ALERTS: send only the stations in alert state. Their CoT is the
+        # same as in the full feed (same UID), so a user who also sees the full
+        # feed gets one marker; when the alert ends the marker goes stale.
         events: list[bytes] = []
         weather_count = rad_count = 0
         if self.s.weather and self._fresh(self.stations_at, mono):
-            events += [self.weather_event(st, now) for st in self.stations]
+            for st in self.stations:
+                if not self.s.only_alerts or self.weather_alerts(st, now):
+                    events.append(self.weather_event(st, now))
             weather_count = len(self.stations)
         if self.s.radiation and self._fresh(self.radiation_at, mono):
             for st in self.radiation_stations:
+                if self.s.only_alerts and not self.radiation_alerting(st):
+                    continue
                 event = self.radiation_event(st, now)
                 if event:
                     events.append(event)
-                    rad_count += 1
+            rad_count = sum(1 for st in self.radiation_stations if self.dose_rate(st) is not None)
         if not self.s.weather and fetched and not rad_count:
             failed = True
 
         if fetched:
-            LOG.info("Weather: %d stations, radiation: %d (%.1f s)",
-                     weather_count, rad_count, time.monotonic() - started)
+            LOG.info("Weather: %d stations, radiation: %d, sent %d (%.1f s)",
+                     weather_count, rad_count, len(events), time.monotonic() - started)
             if self.health is not None:
                 if failed:
                     self.health.error()
                 else:
                     self.health.ok()
         else:
-            LOG.debug("Re-sent weather: %d stations, radiation: %d", weather_count, rad_count)
+            LOG.debug("Re-sent %d (weather: %d stations, radiation: %d)",
+                      len(events), weather_count, rad_count)
         return events
 
     async def start(self) -> None:
